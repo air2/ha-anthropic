@@ -3,7 +3,7 @@
 from enum import StrEnum
 import logging
 
-DOMAIN = "anthropic"
+DOMAIN = "anthropic_oauth"
 LOGGER = logging.getLogger(__package__)
 
 DEFAULT_CONVERSATION_NAME = "Claude conversation"
