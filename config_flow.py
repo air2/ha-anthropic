@@ -41,6 +41,10 @@ from homeassistant.helpers.selector import (
 from homeassistant.helpers.typing import VolDictType
 
 from .const import (
+    AUTH_METHOD_API_KEY,
+    AUTH_METHOD_OAUTH_TOKEN,
+    CONF_AUTH_METHOD,
+    CONF_AUTH_TOKEN,
     CONF_CHAT_MODEL,
     CONF_CODE_EXECUTION,
     CONF_MAX_TOKENS,
@@ -73,9 +77,27 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
+STEP_PICK_AUTH_METHOD_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_AUTH_METHOD): SelectSelector(
+            SelectSelectorConfig(
+                options=[AUTH_METHOD_API_KEY, AUTH_METHOD_OAUTH_TOKEN],
+                translation_key=CONF_AUTH_METHOD,
+                mode=SelectSelectorMode.LIST,
+            )
+        ),
+    }
+)
+
+STEP_API_KEY_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_API_KEY): str,
+    }
+)
+
+STEP_OAUTH_TOKEN_DATA_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_AUTH_TOKEN): str,
     }
 )
 
@@ -91,13 +113,15 @@ DEFAULT_AI_TASK_OPTIONS = {
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
-    """Validate the user input allows us to connect.
-
-    Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
-    """
-    client = anthropic.AsyncAnthropic(
-        api_key=data[CONF_API_KEY], http_client=get_async_client(hass)
-    )
+    """Validate the user input allows us to connect."""
+    if data.get(CONF_AUTH_METHOD) == AUTH_METHOD_OAUTH_TOKEN:
+        client = anthropic.AsyncAnthropic(
+            auth_token=data[CONF_AUTH_TOKEN], http_client=get_async_client(hass)
+        )
+    else:
+        client = anthropic.AsyncAnthropic(
+            api_key=data[CONF_API_KEY], http_client=get_async_client(hass)
+        )
     await client.models.list(timeout=10.0)
 
 
@@ -107,16 +131,34 @@ class AnthropicConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 2
     MINOR_VERSION = 4
 
+    _auth_method: str
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle the initial step."""
+        if user_input is not None:
+            self._auth_method = user_input[CONF_AUTH_METHOD]
+            if self._auth_method == AUTH_METHOD_OAUTH_TOKEN:
+                return await self.async_step_oauth_token()
+            return await self.async_step_api_key()
+
+        return self.async_show_form(
+            step_id="user",
+            data_schema=STEP_PICK_AUTH_METHOD_SCHEMA,
+        )
+
+    async def async_step_api_key(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle API key entry."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            self._async_abort_entries_match(user_input)
+            self._async_abort_entries_match({CONF_API_KEY: user_input[CONF_API_KEY]})
+            data = {CONF_AUTH_METHOD: AUTH_METHOD_API_KEY, **user_input}
             try:
-                await validate_input(self.hass, user_input)
+                await validate_input(self.hass, data)
             except anthropic.APITimeoutError:
                 errors["base"] = "timeout_connect"
             except anthropic.APIConnectionError:
@@ -135,11 +177,11 @@ class AnthropicConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 if self.source == SOURCE_REAUTH:
                     return self.async_update_reload_and_abort(
-                        self._get_reauth_entry(), data_updates=user_input
+                        self._get_reauth_entry(), data_updates=data
                     )
                 return self.async_create_entry(
                     title="Claude",
-                    data=user_input,
+                    data=data,
                     subentries=[
                         {
                             "subentry_type": "conversation",
@@ -157,18 +199,77 @@ class AnthropicConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
 
         return self.async_show_form(
-            step_id="user",
-            data_schema=STEP_USER_DATA_SCHEMA,
+            step_id="api_key",
+            data_schema=STEP_API_KEY_DATA_SCHEMA,
             errors=errors or None,
             description_placeholders={
                 "instructions_url": "https://www.home-assistant.io/integrations/anthropic/#generating-an-api-key",
             },
         )
 
+    async def async_step_oauth_token(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle OAuth token entry."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            self._async_abort_entries_match({CONF_AUTH_TOKEN: user_input[CONF_AUTH_TOKEN]})
+            data = {CONF_AUTH_METHOD: AUTH_METHOD_OAUTH_TOKEN, **user_input}
+            try:
+                await validate_input(self.hass, data)
+            except anthropic.APITimeoutError:
+                errors["base"] = "timeout_connect"
+            except anthropic.APIConnectionError:
+                errors["base"] = "cannot_connect"
+            except anthropic.APIStatusError as e:
+                errors["base"] = "unknown"
+                if (
+                    isinstance(e.body, dict)
+                    and (error := e.body.get("error"))
+                    and error.get("type") == "authentication_error"
+                ):
+                    errors["base"] = "authentication_error"
+            except Exception:
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
+            else:
+                if self.source == SOURCE_REAUTH:
+                    return self.async_update_reload_and_abort(
+                        self._get_reauth_entry(), data_updates=data
+                    )
+                return self.async_create_entry(
+                    title="Claude",
+                    data=data,
+                    subentries=[
+                        {
+                            "subentry_type": "conversation",
+                            "data": DEFAULT_CONVERSATION_OPTIONS,
+                            "title": DEFAULT_CONVERSATION_NAME,
+                            "unique_id": None,
+                        },
+                        {
+                            "subentry_type": "ai_task_data",
+                            "data": DEFAULT_AI_TASK_OPTIONS,
+                            "title": DEFAULT_AI_TASK_NAME,
+                            "unique_id": None,
+                        },
+                    ],
+                )
+
+        return self.async_show_form(
+            step_id="oauth_token",
+            data_schema=STEP_OAUTH_TOKEN_DATA_SCHEMA,
+            errors=errors or None,
+        )
+
     async def async_step_reauth(
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Perform reauth upon an API authentication error."""
+        self._auth_method = entry_data.get(CONF_AUTH_METHOD, AUTH_METHOD_API_KEY)
+        if self._auth_method == AUTH_METHOD_OAUTH_TOKEN:
+            return await self.async_step_reauth_oauth_token()
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -177,9 +278,19 @@ class AnthropicConfigFlow(ConfigFlow, domain=DOMAIN):
         """Dialog that informs the user that reauth is required."""
         if not user_input:
             return self.async_show_form(
-                step_id="reauth_confirm", data_schema=STEP_USER_DATA_SCHEMA
+                step_id="reauth_confirm", data_schema=STEP_API_KEY_DATA_SCHEMA
             )
-        return await self.async_step_user(user_input)
+        return await self.async_step_api_key(user_input)
+
+    async def async_step_reauth_oauth_token(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Dialog that informs the user that reauth is required for their OAuth token."""
+        if not user_input:
+            return self.async_show_form(
+                step_id="reauth_oauth_token", data_schema=STEP_OAUTH_TOKEN_DATA_SCHEMA
+            )
+        return await self.async_step_oauth_token(user_input)
 
     @classmethod
     @callback
@@ -547,10 +658,7 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         location_data: dict[str, str] = {}
         zone_home = self.hass.states.get(ENTITY_ID_HOME)
         if zone_home is not None:
-            client = anthropic.AsyncAnthropic(
-                api_key=self._get_entry().data[CONF_API_KEY],
-                http_client=get_async_client(self.hass),
-            )
+            client = self._get_entry().runtime_data.client
             location_schema = vol.Schema(
                 {
                     vol.Optional(

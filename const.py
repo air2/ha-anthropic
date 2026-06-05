@@ -27,6 +27,11 @@ CONF_WEB_SEARCH_REGION = "region"
 CONF_WEB_SEARCH_COUNTRY = "country"
 CONF_WEB_SEARCH_TIMEZONE = "timezone"
 
+CONF_AUTH_TOKEN = "auth_token"
+CONF_AUTH_METHOD = "auth_method"
+AUTH_METHOD_API_KEY = "api_key"
+AUTH_METHOD_OAUTH_TOKEN = "oauth_token"
+
 
 class PromptCaching(StrEnum):
     """Prompt caching options."""

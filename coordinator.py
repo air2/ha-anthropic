@@ -12,7 +12,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DOMAIN, LOGGER
+from .const import AUTH_METHOD_OAUTH_TOKEN, CONF_AUTH_METHOD, CONF_AUTH_TOKEN, DOMAIN, LOGGER
 
 UPDATE_INTERVAL_CONNECTED = datetime.timedelta(hours=12)
 UPDATE_INTERVAL_DISCONNECTED = datetime.timedelta(minutes=1)
@@ -49,9 +49,16 @@ class AnthropicCoordinator(DataUpdateCoordinator[list[anthropic.types.ModelInfo]
             update_method=self.async_update_data,
             always_update=False,
         )
-        self.client = anthropic.AsyncAnthropic(
-            api_key=config_entry.data[CONF_API_KEY], http_client=get_async_client(hass)
-        )
+        if config_entry.data.get(CONF_AUTH_METHOD) == AUTH_METHOD_OAUTH_TOKEN:
+            self.client = anthropic.AsyncAnthropic(
+                auth_token=config_entry.data[CONF_AUTH_TOKEN],
+                http_client=get_async_client(hass),
+            )
+        else:
+            self.client = anthropic.AsyncAnthropic(
+                api_key=config_entry.data[CONF_API_KEY],
+                http_client=get_async_client(hass),
+            )
 
     @callback
     def async_set_updated_data(self, data: list[anthropic.types.ModelInfo]) -> None:

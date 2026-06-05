@@ -82,6 +82,8 @@ async def async_migrate_integration(hass: HomeAssistant) -> None:
     device_registry = dr.async_get(hass)
 
     for entry in entries:
+        if CONF_API_KEY not in entry.data:
+            continue
         use_existing = False
         subentry = ConfigSubentry(
             data=entry.options,
